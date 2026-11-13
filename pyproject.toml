@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cub"
+version = "0.1.0"
+description = "DSL that compiles to cnfc formulas"
+requires-python = ">=3.12"
+dependencies = [
+    "cnfc>=1.0,<1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pyrefly>=1.4.1",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:module 'sre_parse' is deprecated:DeprecationWarning:cnfc.regex",
+]
