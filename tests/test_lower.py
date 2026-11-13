@@ -146,6 +146,104 @@ def test_reinterpret_reads_the_same_bits_with_flipped_signedness(width: int) -> 
     assert mismatches == []
 
 
+def truncating_divmod(a: int, b: int) -> tuple[int, int]:
+    magnitude = abs(a) // abs(b)
+    quotient = -magnitude if (a < 0) != (b < 0) else magnitude
+    return quotient, a - b * quotient
+
+
+def div_oracle(a: int, b: int, width: int, signed: bool) -> int:
+    if b != 0:
+        return wrap(truncating_divmod(a, b)[0], width, signed)
+    if signed:
+        return -1 if a >= 0 else 1
+    return (1 << width) - 1
+
+
+def rem_oracle(a: int, b: int, width: int, signed: bool) -> int:
+    return wrap(truncating_divmod(a, b)[1], width, signed) if b != 0 else a
+
+
+def shl_oracle(a: int, amount: int, width: int, signed: bool) -> int:
+    return 0 if amount >= width else wrap(a << amount, width, signed)
+
+
+def shr_oracle(a: int, amount: int, width: int, signed: bool) -> int:
+    if amount >= width:
+        return -1 if signed and a < 0 else 0
+    return wrap(a >> amount, width, signed)
+
+
+type Oracle = Callable[[int, int, int, bool], int]
+
+DIVISION: dict[str, tuple[Op, Oracle]] = {
+    "div": (operator.floordiv, div_oracle),
+    "rem": (operator.mod, rem_oracle),
+}
+SHIFT: dict[str, tuple[Op, Oracle]] = {
+    "shl": (operator.lshift, shl_oracle),
+    "shr": (operator.rshift, shr_oracle),
+}
+
+
+def operands[V: (Int, UInt), W: (Int, UInt)](
+    mode: str, width: int, a: tuple[type[V], int], b: tuple[type[W], int]
+) -> tuple[V, W, list[Bool]]:
+    """The same values as constants, or as variables pinned by equality, so both the
+    constant-folded and the symbolic encodings are exercised."""
+    (a_cls, a_value), (b_cls, b_value) = a, b
+    if mode == "const":
+        return a_cls.const(a_value, width), b_cls.const(b_value, width), []
+    x, y = a_cls.var("x", width), b_cls.var("y", width)
+    return x, y, [x == a_value, y == b_value]
+
+
+@pytest.mark.parametrize("mode", ["const", "var"])
+@pytest.mark.parametrize("width", WIDTHS)
+@pytest.mark.parametrize("cls", CLASSES, ids=ids)
+@pytest.mark.parametrize("op", DIVISION)
+def test_division_takes_only_the_smtlib_value[V: (Int, UInt)](
+    op: str, cls: type[V], width: int, mode: str
+) -> None:
+    build, oracle = DIVISION[op]
+    mismatches = [
+        (a, b, got, expected)
+        for a, b in itertools.product(domain(cls, width), repeat=2)
+        for x, y, given in [operands(mode, width, (cls, a), (cls, b))]
+        if (got := feasible_values(build(x, y), *given))
+        != [expected := oracle(a, b, width, cls is Int)]
+    ]
+    assert mismatches == []
+
+
+@pytest.mark.parametrize("mode", ["const", "var"])
+@pytest.mark.parametrize("width", WIDTHS)
+@pytest.mark.parametrize("cls", CLASSES, ids=ids)
+@pytest.mark.parametrize("op", SHIFT)
+def test_shift_takes_only_the_smtlib_value[V: (Int, UInt)](
+    op: str, cls: type[V], width: int, mode: str
+) -> None:
+    build, oracle = SHIFT[op]
+    mismatches = [
+        (a, amount, got, expected)
+        for a, amount in itertools.product(domain(cls, width), domain(UInt, width))
+        for x, n, given in [operands(mode, width, (cls, a), (UInt, amount))]
+        if (got := feasible_values(build(x, n), *given))
+        != [expected := oracle(a, amount, width, cls is Int)]
+    ]
+    assert mismatches == []
+
+
+def test_division_by_zero_inside_or_stays_satisfiable() -> None:
+    x, y, z = UInt.var("x", 4), UInt.var("y", 4), Bool.var("z")
+    assert satisfiable(y == 0, z, (x // y == 1) | z), "cnfc 1.0's TupleDiv returns UNSAT here"
+
+
+def test_negated_remainder_by_zero_leaves_operands_free() -> None:
+    x, y = UInt.var("x", 4), UInt.var("y", 4)
+    assert satisfiable(y == 0, x == 5, ~(x % y == 3))
+
+
 def pinned(var: Bool, value: bool) -> Bool:
     return var if value else ~var
 

@@ -33,7 +33,7 @@ BOOL = BoolType()
 
 type Type = BV | BoolType
 type UnaryOp = Literal["neg", "bvnot"]
-type BinaryOp = Literal["add", "sub", "mul"]
+type BinaryOp = Literal["add", "sub", "mul", "div", "rem", "shl", "shr"]
 type CompareOp = Literal["eq", "ne", "lt", "le", "gt", "ge"]
 type LogicOp = Literal["and", "or"]
 type ResizeOp = Literal["sext", "zext", "trunc", "reinterpret"]
@@ -56,6 +56,15 @@ def _same_bv(a: Node, b: Node) -> BV:
     if left != right:
         raise TypeError(f"operands must have identical types, got {left} and {right}")
     return left
+
+
+def _shift_operands(value: Node, amount: Node) -> BV:
+    shifted, actual = _bv(value, "shifted operand"), _bv(amount, "shift amount")
+    expected = BV(shifted.width, signed=False)
+    if actual != expected:
+        hint = "; convert a signed amount with .as_unsigned()" if actual.signed else ""
+        raise TypeError(f"shift amount must be {expected}, got {actual}{hint}")
+    return shifted
 
 
 @dataclass(frozen=True)
@@ -92,7 +101,10 @@ class Binary:
     type: BV = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "type", _same_bv(self.a, self.b))
+        if self.op in ("shl", "shr"):
+            object.__setattr__(self, "type", _shift_operands(self.a, self.b))
+        else:
+            object.__setattr__(self, "type", _same_bv(self.a, self.b))
 
 
 @dataclass(frozen=True)

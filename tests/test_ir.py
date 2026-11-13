@@ -38,6 +38,10 @@ ILL_TYPED: dict[str, Callable[[], Node]] = {
     "trunc wider": lambda: Resize("trunc", x8, 16),
     "trunc to zero": lambda: Resize("trunc", x8, 0),
     "reinterpret changes width": lambda: Resize("reinterpret", x8, 16),
+    "div mixed signedness": lambda: Binary("div", x8, u8),
+    "shift by signed amount": lambda: Binary("shr", u8, x8),
+    "shift amount width differs": lambda: Binary("shl", x16, u8),
+    "shift of bool": lambda: Binary("shl", p, u8),
 }
 
 
@@ -65,6 +69,7 @@ def test_const_at_range_edge_is_accepted(value: int, type_: BV) -> None:
     ("node", "expected"),
     [
         (Binary("mul", x8, y8), I8),
+        (Binary("shr", x8, u8), I8),
         (Compare("le", u8, u8), BOOL),
         (Resize("sext", x8, 16), BV(16, True)),
         (Resize("zext", u8, 12), BV(12, False)),

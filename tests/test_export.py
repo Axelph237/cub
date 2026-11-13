@@ -20,6 +20,21 @@ def test_two_variable_constraint_matches_the_format_contract() -> None:
     }
 
 
+def test_shift_exports_its_unsigned_amount() -> None:
+    x = Int.var("x", 8)
+    assert json.loads(to_json(x >> 3 == -1)) == {
+        "version": 1,
+        "nodes": [
+            {"id": 0, "op": "var", "name": "x", "type": I8},
+            {"id": 1, "op": "const", "value": 3, "type": {"kind": "bv", "width": 8, "signed": False}},
+            {"id": 2, "op": "shr", "args": [0, 1], "type": I8},
+            {"id": 3, "op": "const", "value": -1, "type": I8},
+            {"id": 4, "op": "eq", "args": [2, 3], "type": {"kind": "bool"}},
+        ],
+        "constraints": [4],
+    }
+
+
 def test_shared_subexpression_is_emitted_once() -> None:
     x, y = Int.var("x", 8), Int.var("y", 8)
     total = x + y

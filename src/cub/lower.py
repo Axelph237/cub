@@ -29,6 +29,7 @@ class Lowering:
     def __init__(self) -> None:
         self.formula = cnfc.Formula()
         self.memo: dict[ir.Node, Bits] = {}
+        self.divisions: dict[tuple[ir.Node, ir.Node], tuple[Bits, Bits]] = {}
 
     def bits(self, node: ir.Node) -> Bits:
         if node not in self.memo:
@@ -64,6 +65,15 @@ class Lowering:
                     case "mul":
                         product = self._emit(tuples.tuple_mul(self.formula, [*left], [*right]))
                         return tuple(product[-len(left) :])
+                    case "div":
+                        return self._divide(a, b)[0]
+                    case "rem":
+                        return self._divide(a, b)[1]
+                    case "shl":
+                        return self._shift(left, right, _FALSE, toward_msb=True)
+                    case "shr":
+                        fill = left[0] if node.type.signed else _FALSE
+                        return self._shift(left, right, fill, toward_msb=False)
             case ir.Compare(op=op, a=a, b=b):
                 match op:
                     case "eq" | "ne":
@@ -108,6 +118,69 @@ class Lowering:
             bits[0] = ~bits[0]
         return bits
 
+    def _divide(self, a: ir.Node, b: ir.Node) -> tuple[Bits, Bits]:
+        """Quotient and remainder, shared by div and rem on the same operands."""
+        if (a, b) not in self.divisions:
+            dividend, divisor = self.bits(a), self.bits(b)
+            if isinstance(a.type, ir.BV) and a.type.signed:
+                # SMT-LIB bvsdiv/bvsrem: divide magnitudes, then restore signs. The quotient
+                # is negative iff the signs differ and the remainder takes the dividend's sign.
+                quotient, remainder = self._udivrem(self._abs(dividend), self._abs(divisor))
+                negate = self._gate(tseytin.gen_xor, (dividend[0], divisor[0]))
+                quotient = self._mux(negate, self._neg(quotient), quotient)
+                remainder = self._mux(dividend[0], self._neg(remainder), remainder)
+                self.divisions[a, b] = quotient, remainder
+            else:
+                self.divisions[a, b] = self._udivrem(dividend, divisor)
+        return self.divisions[a, b]
+
+    def _udivrem(self, a: Bits, b: Bits) -> tuple[Bits, Bits]:
+        """bvudiv/bvurem as fresh bits that every (a, b) determines uniquely.
+
+        Each branch is guarded by b == 0 or its negation, and exactly one (q, r) satisfies
+        them for every (a, b). The clauses only define q and r, so the encoding stays
+        sound under | and ~, unlike cnfc's TupleDiv, which constrains b globally.
+        """
+        q = tuple(self.formula.AddVar() for _ in a)
+        r = tuple(self.formula.AddVar() for _ in a)
+        b_zero = self._gate(tseytin.gen_and, [~bit for bit in b])
+        self._implies_equal(b_zero, q, _constant(-1, len(q)))
+        self._implies_equal(b_zero, r, a)
+        # b * q + r in full width cannot wrap, so a == b * q + r with r < b pins q and r.
+        product = self._emit(tuples.tuple_mul(self.formula, [*b], [*q]))
+        total = self._emit(tuples.tuple_add(self.formula, product, [*r]))
+        self._implies_equal(~b_zero, tuple(total), _constant(0, len(total) - len(a)) + a)
+        self.formula.AddClause(b_zero, self._emit(tuples.tuple_less_than(self.formula, [*r], [*b], True)))
+        return q, r
+
+    def _implies_equal(self, guard: Lit, xs: Bits, ys: Bits) -> None:
+        for x, y in zip(xs, ys, strict=True):
+            self.formula.AddClause(~guard, ~x, y)
+            self.formula.AddClause(~guard, x, ~y)
+
+    def _shift(self, bits: Bits, amount: Bits, fill: Lit, toward_msb: bool) -> Bits:
+        """Barrel shifter: stage k shifts by 2^k when amount bit k is set."""
+        width = len(bits)
+        stages = (width - 1).bit_length()  # the k with 2^k < width
+        for k in range(stages):
+            step, pad = 1 << k, (fill,) * (1 << k)
+            shifted = bits[step:] + pad if toward_msb else pad + bits[:-step]
+            bits = self._mux(amount[-1 - k], shifted, bits)
+        overflow = self._any(amount[: width - stages])
+        return self._mux(overflow, (fill,) * width, bits)
+
+    def _any(self, bits: Bits) -> Lit:
+        if any(isinstance(bit, cnfc.BooleanLiteral) and bit.val for bit in bits):
+            return _TRUE
+        unknown = [bit for bit in bits if not isinstance(bit, cnfc.BooleanLiteral)]
+        if len(unknown) > 1:
+            return self._gate(tseytin.gen_or, unknown)
+        return unknown[0] if unknown else _FALSE
+
+    def _abs(self, bits: Bits) -> Bits:
+        """Magnitude as an unsigned pattern. INT_MIN maps to itself, which is 2^(w-1) unsigned."""
+        return self._mux(bits[0], self._neg(bits), bits)
+
     def _add(self, a: Bits, b: Bits) -> Bits:
         total = self._emit(tuples.tuple_add(self.formula, [*a], [*b]))
         return tuple(total[1:])
@@ -116,6 +189,8 @@ class Lowering:
         return self._add(tuple(~bit for bit in bits), _constant(1, len(bits)))
 
     def _mux(self, cond: Lit, then: Bits, else_: Bits) -> Bits:
+        if isinstance(cond, cnfc.BooleanLiteral):
+            return then if cond.val else else_
         out = tuple(self.formula.AddVar() for _ in then)
         for o, t, e in zip(out, then, else_):
             self.formula.AddClause(~cond, ~t, o)
@@ -188,6 +263,9 @@ def _lower_all(constraints: Iterable[Bool]) -> Lowering:
     for constraint in constraints:
         lowering.formula.AddClause(lowering.lit(constraint.node))
     return lowering
+
+
+_FALSE, _TRUE = cnfc.BooleanLiteral(False), cnfc.BooleanLiteral(True)
 
 
 def _constant(value: int, width: int) -> Bits:

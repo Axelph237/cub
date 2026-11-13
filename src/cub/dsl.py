@@ -29,15 +29,18 @@ class _BitVec:
     def width(self) -> int:
         return self.type.width
 
-    def _operand(self, other: Self | int) -> ir.Node:
+    def _operand(self, other: _BitVec | int, int_type: ir.BV | None = None) -> ir.Node:
         if isinstance(other, int):
-            return ir.Const(other, self.type)
+            return ir.Const(other, int_type or self.type)
         if isinstance(other, _BitVec):
             return other.node
         raise TypeError(f"cannot combine {type(self).__name__} with {type(other).__name__}")
 
     def _binary(self, op: ir.BinaryOp, a: ir.Node, b: ir.Node) -> Self:
         return type(self)(ir.Binary(op, a, b))
+
+    def _shift(self, op: ir.BinaryOp, amount: UInt | int) -> Self:
+        return self._binary(op, self.node, self._operand(amount, ir.BV(self.width, signed=False)))
 
     def _compare(self, op: ir.CompareOp, other: Self | int) -> Bool:
         return Bool(ir.Compare(op, self.node, self._operand(other)))
@@ -59,6 +62,24 @@ class _BitVec:
 
     def __rmul__(self, other: int) -> Self:
         return self._binary("mul", self._operand(other), self.node)
+
+    def __floordiv__(self, other: Self | int) -> Self:
+        return self._binary("div", self.node, self._operand(other))
+
+    def __rfloordiv__(self, other: int) -> Self:
+        return self._binary("div", self._operand(other), self.node)
+
+    def __mod__(self, other: Self | int) -> Self:
+        return self._binary("rem", self.node, self._operand(other))
+
+    def __rmod__(self, other: int) -> Self:
+        return self._binary("rem", self._operand(other), self.node)
+
+    def __lshift__(self, amount: UInt | int) -> Self:
+        return self._shift("shl", amount)
+
+    def __rshift__(self, amount: UInt | int) -> Self:
+        return self._shift("shr", amount)
 
     def __neg__(self) -> Self:
         return type(self)(ir.Unary("neg", self.node))
@@ -102,13 +123,16 @@ class _BitVec:
 
 
 class Int(_BitVec):
-    """Signed two's-complement bitvector. Arithmetic wraps modulo 2**width."""
+    """Signed two's-complement bitvector. Arithmetic wraps modulo 2**width.
+
+    // and % truncate toward zero (SMT-LIB bvsdiv/bvsrem), unlike Python ints. >> is arithmetic.
+    """
 
     signed = True
 
 
 class UInt(_BitVec):
-    """Unsigned bitvector. Arithmetic wraps modulo 2**width."""
+    """Unsigned bitvector. Arithmetic wraps modulo 2**width. >> is logical."""
 
     signed = False
 

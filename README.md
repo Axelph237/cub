@@ -26,13 +26,18 @@ to_json(x + y == 3)         # a JSON DAG, one entry per distinct node
 
 - `Int` is signed two's complement and `UInt` is unsigned. Each has a fixed
   width that you set at construction, as in `Int.var("x", 8)`.
-- `+ - * == != < <= > >=` need two operands of the same class and width.
+- `+ - * // % == != < <= > >=` need two operands of the same class and width.
   A mismatch raises `TypeError`. pyrefly also rejects `Int + UInt`
   statically. Python types cannot express widths, so widths are checked at
   runtime only.
 - A Python `int` operand takes the type of the other operand. An int that
   does not fit raises `ValueError`, so `Int.const(128, 8)` and `x8 + 200`
   both fail.
+- The shift amount in `<<` and `>>` must be a `UInt` with the same width as
+  the shifted operand, for both `Int` and `UInt` operands. An `Int` amount
+  raises `TypeError`, and pyrefly also rejects it statically. Convert it with
+  `.as_unsigned()`. A Python `int` amount becomes that `UInt` type, so
+  `x >> -1` raises `ValueError`.
 - `.sext(w)` and `.zext(w)` widen, and `.trunc(w)` narrows.
   `.as_signed()` and `.as_unsigned()` read the same bits with the other
   signedness.
@@ -47,6 +52,26 @@ Arithmetic wraps modulo $2^{w}$, as in SMT-LIB `QF_BV`. For example, a
 and adds no side constraint. As a result, an operation stays sound inside
 `|` and `~`. cnfc's own `Integer` subtraction does not have this property.
 Signed comparisons flip the sign bit and then compare as unsigned.
+
+Division follows SMT-LIB, not Python. Read `//` and `%` as `bvudiv` and
+`bvurem` on `UInt`, and as `bvsdiv` and `bvsrem` on `Int`.
+
+- Signed division truncates toward zero, and the remainder takes the sign of
+  the dividend. For example, `-7 // 2 == -3` and `-7 % 2 == -1`. Python gives
+  `-4` and `1`.
+- `INT_MIN // -1` wraps to `INT_MIN`.
+- Division by zero is defined. For `UInt`, `x // 0` is $2^{w} - 1$ and
+  `x % 0` is `x`. For `Int`, `x // 0` is $-1$ when $x \ge 0$ and $1$ when
+  $x < 0$, and `x % 0` is `x`.
+
+`<<` is a logical shift left. `>>` is an arithmetic shift on `Int` and a
+logical shift on `UInt`. An amount of $w$ or more gives $0$, except that an
+arithmetic `>>` gives copies of the sign bit, so a negative `x` gives $-1$.
+
+Division and shifts are also total. Division adds fresh quotient and
+remainder bits whose clauses hold for exactly one value per pair of operands,
+so `(x // y == 1) | z` stays satisfiable when $y = 0$. cnfc's own `Integer`
+division fails that case. A shift by a constant amount adds no clauses.
 
 `model[h]` works for any handle that appears in the solved constraints. It
 raises `KeyError` for any other handle. A bitvector variable named `x` lowers
