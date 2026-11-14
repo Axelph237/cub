@@ -5,11 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cub"
 version = "0.1.0"
-description = "DSL that compiles to cnfc formulas"
+description = "Typed bitvector DSL that compiles to CNF"
 requires-python = ">=3.12"
-dependencies = [
-    "cnfc>=1.0,<1.1",
-]
+dependencies = []
 
 [dependency-groups]
 dev = [
@@ -19,6 +17,3 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-filterwarnings = [
-    "ignore:module 'sre_parse' is deprecated:DeprecationWarning:cnfc.regex",
-]

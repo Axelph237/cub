@@ -1,7 +1,8 @@
 # cub
 
-cub is a typed bitvector DSL. It compiles constraints to a
-[`cnfc`](https://pypi.org/project/cnfc/) `Formula` and exports them to JSON.
+cub is a typed bitvector DSL. It compiles constraints to CNF, solves them
+with a bundled CDCL solver, and exports them to JSON. It has no runtime
+dependencies.
 
 ```python
 from cub import Bool, Int, UInt, compile, solve, to_json
@@ -9,7 +10,8 @@ from cub import Bool, Int, UInt, compile, solve, to_json
 x, y = Int.var("x", 8), Int.var("y", 8)
 model = solve(x + y == 3, x < -100)
 model[x], model[y]          # Python ints, read with the handle's signedness
-formula = compile(x < y)    # a cnfc.Formula
+cnf = compile(x < y)        # a cub.CNF
+cnf.to_dimacs()             # DIMACS text for an external solver
 to_json(x + y == 3)         # a JSON DAG, one entry per distinct node
 ```
 
@@ -19,7 +21,10 @@ to_json(x + y == 3)         # a JSON DAG, one entry per distinct node
 |---|---|
 | `ir.py` | Frozen IR nodes. The type rules live in their constructors. |
 | `dsl.py` | The `Int`, `UInt`, and `Bool` handles, which overload operators. |
-| `lower.py` | `compile`, `solve`, and `Model`, which lower the IR onto cnfc encoders. |
+| `lower.py` | `compile`, `solve`, and `Model`, which lower the IR to CNF. |
+| `cnf.py` | `CNF`, the variable allocator and clause list. |
+| `encode.py` | Tseytin gates and the adder, multiplier, and comparator circuits. |
+| `_millisat.py` | The CDCL solver behind `solve`. |
 | `export.py` | `to_json`. |
 
 ## Type rules
@@ -50,7 +55,7 @@ to_json(x + y == 3)         # a JSON DAG, one entry per distinct node
 Arithmetic wraps modulo $2^{w}$, as in SMT-LIB `QF_BV`. For example, a
 3-bit `UInt` satisfies `x + 1 == 0` with `x = 7`. Every operation is total
 and adds no side constraint. As a result, an operation stays sound inside
-`|` and `~`. cnfc's own `Integer` subtraction does not have this property.
+`|` and `~`.
 Signed comparisons flip the sign bit and then compare as unsigned.
 
 Division follows SMT-LIB, not Python. Read `//` and `%` as `bvudiv` and
@@ -70,20 +75,26 @@ arithmetic `>>` gives copies of the sign bit, so a negative `x` gives $-1$.
 
 Division and shifts are also total. Division adds fresh quotient and
 remainder bits whose clauses hold for exactly one value per pair of operands,
-so `(x // y == 1) | z` stays satisfiable when $y = 0$. cnfc's own `Integer`
-division fails that case. A shift by a constant amount adds no clauses.
+so `(x // y == 1) | z` stays satisfiable when $y = 0$. A shift by a constant amount adds no clauses.
 
 `model[h]` works for any handle that appears in the solved constraints. It
-raises `KeyError` for any other handle. A bitvector variable named `x` lowers
-to the cnfc variables `x:0` (the MSB) through `x:{w-1}`. As a result,
-`formula.Solve().integer("x", w)` also returns its unsigned bit pattern.
+raises `KeyError` for any other handle. A variable name refers to one
+variable, so two `Int.var("x", 8)` handles are the same variable. Reusing a
+name with a different type, as in `Int.var("x", 8)` and `UInt.var("x", 8)`,
+raises `TypeError`.
 
-## cnfc dependency
+## CNF
 
-cub imports `cnfc.tuples` and `cnfc.tseytin` directly. `cnfc/__init__.py`
-does not export these modules, so the dependency is pinned to
-`cnfc>=1.0,<1.1`. cnfc is released under the Unlicense, so these encoders
-can be vendored if a later cnfc release changes them.
+`compile(*constraints)` returns a `CNF`. Its `clauses` are tuples of DIMACS
+literals, where the int $v$ is variable $v$ and $-v$ is its negation.
+`num_vars` counts every allocated variable, and `to_dimacs()` writes the
+`p cnf` header and one line per clause. Variable 1 is reserved as the
+constant true and never appears in a clause. Variable numbers carry no names,
+so read values back through `solve` and `Model`.
+
+`encode.py` and `_millisat.py` are adapted from
+[cnfc](https://pypi.org/project/cnfc/) 1.0.0, which is released under the
+Unlicense.
 
 ## Development
 

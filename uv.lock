@@ -3,15 +3,6 @@ revision = 5
 requires-python = ">=3.12"
 
 [[package]]
-name = "cnfc"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/14/f4/deedd22fd9d74953a8210d842080932e6c952f7509a62b6431a601516c1f/cnfc-1.0.0.tar.gz", hash = "sha256:e315acc110e648a6cc7810498c15f76359447b7918e0fc2d86d5640e8341465d", size = 439234, upload-time = "2026-06-08T17:56:03.614Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/7c/374adc16baa5c8bfaa57e435a67d91b9878ee9896d154524fd7658bb4107/cnfc-1.0.0-py3-none-any.whl", hash = "sha256:22a19db2fa0bbc57f7c7ec1e0e222b3c31dd9abb82e38f8372c5c1911ea83abc", size = 29905, upload-time = "2026-06-08T17:56:04.571Z" },
-]
-
-[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -24,9 +15,6 @@ wheels = [
 name = "cub"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
-    { name = "cnfc" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -35,7 +23,6 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "cnfc", specifier = ">=1.0,<1.1" }]
 
 [package.metadata.requires-dev]
 dev = [

@@ -3,10 +3,11 @@ import operator
 from collections.abc import Callable
 from typing import Any
 
-import cnfc
 import pytest
 
-from cub import Bool, Int, UInt, compile, solve
+from cub import CNF, Bool, Int, UInt, compile, solve
+from cub._millisat import Solver
+from cub.cnf import FALSE, TRUE
 from cub.ir import Var
 
 type BitVec = Int | UInt
@@ -236,7 +237,7 @@ def test_shift_takes_only_the_smtlib_value[V: (Int, UInt)](
 
 def test_division_by_zero_inside_or_stays_satisfiable() -> None:
     x, y, z = UInt.var("x", 4), UInt.var("y", 4), Bool.var("z")
-    assert satisfiable(y == 0, z, (x // y == 1) | z), "cnfc 1.0's TupleDiv returns UNSAT here"
+    assert satisfiable(y == 0, z, (x // y == 1) | z), "an encoding that constrains y globally returns UNSAT here"
 
 
 def test_negated_remainder_by_zero_leaves_operands_free() -> None:
@@ -284,7 +285,7 @@ def test_logic_is_sat_iff_truth_table_agrees(op: str) -> None:
 def test_subtraction_inside_or_stays_satisfiable_when_x_is_below_y() -> None:
     x, y, z = UInt.var("x", 4), UInt.var("y", 4), Bool.var("z")
     model = solve(x < y, z, (x - y == 0) | z)
-    assert model is not None, "cnfc 1.0 returns UNSAT here; wraparound keeps it SAT"
+    assert model is not None, "wraparound keeps this SAT"
     assert (model[x] < model[y], model[z]) == (True, True)
 
 
@@ -304,9 +305,34 @@ def test_model_rejects_a_handle_outside_the_solved_constraints() -> None:
         model[x + 1]
 
 
-def test_compile_returns_a_cnfc_formula_with_named_bits() -> None:
-    formula = compile(Int.var("x", 4) == -3)
-    assert isinstance(formula, cnfc.Formula)
-    solution = formula.Solve()
-    assert solution is not None
-    assert solution.integer("x", 4) == 0b1101, "bits are named x:0 (MSB) through x:3"
+def test_reusing_a_variable_name_with_another_type_raises() -> None:
+    with pytest.raises(TypeError, match="variable 'x' is used as both"):
+        compile(Int.var("x", 4) == 0, UInt.var("x", 4) == 0)
+
+
+def test_reusing_a_variable_name_with_the_same_type_is_the_same_variable() -> None:
+    assert not satisfiable(Int.var("x", 4) == 1, Int.var("x", 4) != 1)
+
+
+def test_compile_returns_a_cnf_that_holds_the_constraints() -> None:
+    x = Int.var("x", 4)
+    sat, unsat = compile(x == -3), compile(x == -3, x == 2)
+    assert Solver().solve(sat.num_vars, sat.clauses) is not False
+    assert Solver().solve(unsat.num_vars, unsat.clauses) is False
+
+
+def test_add_clause_folds_constants_and_keeps_the_empty_clause() -> None:
+    cnf = CNF()
+    x = cnf.new_var()
+    cnf.add_clause(x, TRUE)
+    cnf.add_clause(x, FALSE)
+    cnf.add_clause(FALSE)
+    assert cnf.clauses == [(x,), ()]
+
+
+def test_dimacs_header_counts_every_allocated_variable() -> None:
+    cnf = CNF()
+    x, y = cnf.new_var(), cnf.new_var()
+    cnf.add_clause(x, -y)
+    cnf.add_clause()
+    assert cnf.to_dimacs() == "p cnf 3 2\n2 -3 0\n0\n", "variable 1 is the reserved TRUE"
