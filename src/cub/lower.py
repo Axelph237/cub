@@ -1,14 +1,21 @@
-"""Lower IR to CNF. Every bitvector is an MSB-first tuple of DIMACS literals."""
+"""Lower IR to CNF. Every node is an MSB-first tuple of DIMACS literals.
+
+A Struct's bits are its leaves, element 0 first, so every Struct operation is rewiring.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import functools
+from collections.abc import Iterable, Mapping, Sequence
 from typing import overload
 
 from cub import encode, ir
 from cub._millisat import Solver
 from cub.cnf import CNF, FALSE, TRUE, Bits, Lit
-from cub.dsl import Bool, Int, UInt
+from cub.dsl import Bool, Int, Struct, UInt
+
+type Value = bool | tuple[Value, ...]
+"""A Bool's or a Struct's value: nested tuples that mirror the Struct's shape."""
 
 # (swap operands, strict) for encode.less_than, which computes a < b or a <= b.
 _ORDERINGS: dict[ir.CompareOp, tuple[bool, bool]] = {
@@ -18,6 +25,16 @@ _ORDERINGS: dict[ir.CompareOp, tuple[bool, bool]] = {
     "ge": (True, False),
 }
 
+# k op c is c mirrored(op) k.
+_MIRRORED: dict[ir.CompareOp, ir.CompareOp] = {
+    "eq": "eq",
+    "ne": "ne",
+    "lt": "gt",
+    "le": "ge",
+    "gt": "lt",
+    "ge": "le",
+}
+
 
 class Lowering:
     def __init__(self) -> None:
@@ -25,6 +42,7 @@ class Lowering:
         self.vars: dict[str, ir.Var] = {}
         self.memo: dict[ir.Node, Bits] = {}
         self.divisions: dict[tuple[ir.Node, ir.Node], tuple[Bits, Bits]] = {}
+        self.counters: dict[ir.Count, dict[tuple[int, int], Lit]] = {}
 
     def bits(self, node: ir.Node) -> Bits:
         if node not in self.memo:
@@ -41,8 +59,7 @@ class Lowering:
                 seen = self.vars.setdefault(name, node)
                 if seen != node:
                     raise TypeError(f"variable {name!r} is used as both {seen.type} and {type_}")
-                width = type_.width if isinstance(type_, ir.BV) else 1
-                return tuple(self.cnf.new_var() for _ in range(width))
+                return tuple(self.cnf.new_var() for _ in range(type_.width))
             case ir.Const(value=value, type=ir.BV(width=width)):
                 return _constant(value, width)
             case ir.Unary(op=op, x=x):
@@ -70,6 +87,10 @@ class Lowering:
                     case "shr":
                         fill = left[0] if node.type.signed else FALSE
                         return self._shift(left, right, fill, toward_msb=False)
+            case ir.Compare(op=op, a=ir.Count() as count, b=ir.Const(value=k)):
+                return (self._count_compare(op, count, k),)
+            case ir.Compare(op=op, a=ir.Const(value=k), b=ir.Count() as count):
+                return (self._count_compare(_MIRRORED[op], count, k),)
             case ir.Compare(op=op, a=a, b=b):
                 match op:
                     case "eq" | "ne":
@@ -104,6 +125,63 @@ class Lowering:
                         return bits[-width:]
                     case "reinterpret":
                         return bits
+            case ir.Pack(elements=elements):
+                return tuple(bit for element in elements for bit in self.bits(element))
+            case ir.Index(x=x, offset=offset, type=type_):
+                return self.bits(x)[offset : offset + type_.width]
+            case ir.Flatten(x=x) | ir.View(x=x) | ir.Bits(x=x):
+                return self.bits(x)
+            case ir.Count(x=x, type=ir.BV(width=width)):
+                # The sum is at most the leaf count, which fits in width bits, so trunc drops zeros.
+                return encode.add_all(self.cnf, [(bit,) for bit in self.bits(x)])[-width:]
+
+    def _count_compare(self, op: ir.CompareOp, count: ir.Count, k: int) -> Lit:
+        """count op k. Every op is a literal of at_least, so the result is a function of the
+        leaves and stays sound under | and ~."""
+        match op:
+            case "ge":
+                return self._at_least(count, k)
+            case "gt":
+                return self._at_least(count, k + 1)
+            case "le":
+                return -self._at_least(count, k + 1)
+            case "lt":
+                return -self._at_least(count, k)
+            case "eq" | "ne":
+                at_least, more = self._at_least(count, k), self._at_least(count, k + 1)
+                exactly = encode.and_(self.cnf, (at_least, -more))
+                return exactly if op == "eq" else -exactly
+
+    def _at_least(self, count: ir.Count, j: int) -> Lit:
+        """count >= j from whichever of the sequential counter and the adder predicts fewer clauses.
+
+        The counter reaches cell (n, j) only through cells (i, c) with c <= j and
+        i - c <= n - j, a j by (n - j + 1) rectangle. Thresholds of one count share the cells
+        where their rectangles overlap.
+        """
+        leaves = self.bits(count.x)
+        n = len(leaves)
+        if j <= 0:
+            return TRUE
+        if j > n:
+            return FALSE
+        if _counter_clauses(n, j) > _adder_clauses(n, j):
+            return -self._below_by_adder(count, j)
+        cells = self.counters.setdefault(count, {})
+
+        def cell(i: int, c: int) -> Lit:
+            return TRUE if c == 0 else FALSE if c > i else cells[i, c]
+
+        for i in range(1, n + 1):
+            for c in range(max(1, j - (n - i)), min(i, j) + 1):
+                if (i, c) not in cells:
+                    above, diagonal = cell(i - 1, c), cell(i - 1, c - 1)
+                    cells[i, c] = encode.at_least_cell(self.cnf, above, leaves[i - 1], diagonal)
+        return cells[n, j]
+
+    def _below_by_adder(self, count: ir.Count, j: int) -> Lit:
+        bound = _constant(j, count.type.width)
+        return encode.less_than(self.cnf, self.bits(count), bound, strict=True)
 
     def _ordered(self, node: ir.Node) -> Bits:
         bits = self.bits(node)
@@ -206,19 +284,36 @@ class Model:
     def __getitem__(self, handle: Bool) -> bool: ...
     @overload
     def __getitem__(self, handle: Int | UInt) -> int: ...
-    def __getitem__(self, handle: Bool | Int | UInt) -> int | bool:
-        if handle.node not in self._bits:
-            raise KeyError(f"{handle.node} is not part of the solved constraints")
-        unsigned = 0
-        for bit in self._bits[handle.node]:
-            unsigned = unsigned << 1 | ((abs(bit) in self._true_vars) == (bit > 0))
+    @overload
+    def __getitem__(self, handle: Struct) -> tuple[Value, ...]: ...
+    def __getitem__(self, handle: Bool | Int | UInt | Struct) -> int | Value:
+        values = self._values(handle.node)
         match handle.node.type:
-            case ir.BoolType():
-                return bool(unsigned)
-            case ir.BV(width=width, signed=True) if unsigned >> (width - 1):
-                return unsigned - (1 << width)
-            case ir.BV():
-                return unsigned
+            case ir.BV(width=width, signed=signed):
+                unsigned = sum(value << i for i, value in enumerate(reversed(values)))
+                return unsigned - (1 << width) if signed and values[0] else unsigned
+            case ir.BoolType() | ir.StructType() as type_:
+                return _decode(type_, values)
+
+    def _values(self, node: ir.Node) -> list[bool]:
+        if node in self._bits:
+            return [(abs(bit) in self._true_vars) == (bit > 0) for bit in self._bits[node]]
+        if isinstance(node, ir.Count) and node.x in self._bits:
+            # A count compared only with constants may lower to counter cells, not to bits.
+            total = sum(self._values(node.x))
+            return [total >> i & 1 == 1 for i in reversed(range(node.type.width))]
+        raise KeyError(f"{node} is not part of the solved constraints")
+
+
+def _decode(type_: ir.Element, values: Sequence[bool]) -> Value:
+    match type_:
+        case ir.BoolType():
+            return values[0]
+        case ir.StructType(elements=elements, offsets=offsets):
+            return tuple(
+                _decode(element, values[offset : offset + element.width])
+                for element, offset in zip(elements, offsets)
+            )
 
 
 def compile(*constraints: Bool) -> CNF:
@@ -236,6 +331,21 @@ def _lower_all(constraints: Iterable[Bool]) -> Lowering:
     for constraint in constraints:
         lowering.cnf.add_clause(lowering.lit(constraint.node))
     return lowering
+
+
+def _counter_clauses(n: int, j: int) -> int:
+    """Clauses for count >= j through the counter over n variable leaves. Cell (1, 1) is the
+    leaf itself, the other n - j cells of column 1 and j - 1 cells of the diagonal fold to 3
+    clauses each, and the rest of the rectangle takes 4."""
+    return 4 * j * (n - j + 1) - n - 3
+
+
+@functools.cache
+def _adder_clauses(n: int, j: int) -> int:
+    """Clauses for count >= j through the adder over n variable leaves, counted by building it."""
+    lowering = Lowering()
+    lowering._below_by_adder(ir.Count(Struct.var("s", n).node), j)
+    return len(lowering.cnf.clauses)
 
 
 def _constant(value: int, width: int) -> Bits:

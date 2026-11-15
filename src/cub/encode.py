@@ -85,13 +85,33 @@ def mul(cnf: CNF, a: Bits, b: Bits) -> Bits:
 
     Shift-and-add: one partial product per bit of b, summed pairwise.
     """
-    partials = [
+    return add_all(cnf, [
         tuple(and_(cnf, (x, bit)) for x in a) + (FALSE,) * shift
         for shift, bit in enumerate(reversed(b))
-    ]
-    while len(partials) > 1:
-        reduced = [add(cnf, x, y) for x, y in zip(partials[:-1:2], partials[1::2])]
-        if len(partials) % 2 == 1:
-            reduced.append(partials[-1])
-        partials = reduced
-    return partials[0]
+    ])
+
+
+def add_all(cnf: CNF, terms: Sequence[Bits]) -> Bits:
+    """The sum of terms, summed pairwise in a balanced tree, wide enough that it never wraps."""
+    while len(terms) > 1:
+        reduced = [add(cnf, x, y) for x, y in zip(terms[:-1:2], terms[1::2])]
+        if len(terms) % 2 == 1:
+            reduced.append(terms[-1])
+        terms = reduced
+    return terms[0]
+
+
+def at_least_cell(cnf: CNF, above: Lit, leaf: Lit, diagonal: Lit) -> Lit:
+    """One cell of a sequential counter: above | (leaf & diagonal), as a full equivalence.
+
+    Cell (i, j) holds "at least j of the first i leaves are true", above is cell (i - 1, j),
+    and diagonal is cell (i - 1, j - 1). The equivalence keeps the cell sound under | and ~.
+    """
+    if above == FALSE and diagonal == TRUE:
+        return leaf
+    out = cnf.new_var()
+    cnf.add_clause(-above, out)
+    cnf.add_clause(-leaf, -diagonal, out)
+    cnf.add_clause(-out, above, leaf)
+    cnf.add_clause(-out, above, diagonal)
+    return out

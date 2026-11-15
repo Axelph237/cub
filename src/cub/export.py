@@ -24,7 +24,7 @@ def to_json(*constraints: Bool) -> str:
         return ids[node]
 
     roots = [visit(constraint.node) for constraint in constraints]
-    return json.dumps({"version": 1, "nodes": nodes, "constraints": roots})
+    return json.dumps({"version": 2, "nodes": nodes, "constraints": roots})
 
 
 def _fields(node: ir.Node, visit: Callable[[ir.Node], int]) -> Json:
@@ -45,6 +45,18 @@ def _fields(node: ir.Node, visit: Callable[[ir.Node], int]) -> Json:
             return {"op": "ite", "args": [visit(cond), visit(then), visit(else_)]}
         case ir.Resize(op=op, x=x, width=width):
             return {"op": op, "args": [visit(x)], "width": width}
+        case ir.Pack(elements=elements):
+            return {"op": "pack", "args": [visit(element) for element in elements]}
+        case ir.Index(x=x, i=i):
+            return {"op": "index", "args": [visit(x)], "index": i}
+        case ir.Flatten(x=x):
+            return {"op": "flatten", "args": [visit(x)]}
+        case ir.View(x=x, signed=signed):
+            return {"op": "view", "args": [visit(x)], "signed": signed}
+        case ir.Bits(x=x):
+            return {"op": "bits", "args": [visit(x)]}
+        case ir.Count(x=x):
+            return {"op": "count", "args": [visit(x)]}
 
 
 def _type(type_: ir.Type) -> Json:
@@ -53,3 +65,5 @@ def _type(type_: ir.Type) -> Json:
             return {"kind": "bv", "width": width, "signed": signed}
         case ir.BoolType():
             return {"kind": "bool"}
+        case ir.StructType(elements=elements):
+            return {"kind": "struct", "elements": [_type(element) for element in elements]}

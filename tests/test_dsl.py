@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from cub import Bool, Int, UInt, solve
-from cub.ir import BV, Binary, Const, Resize, Var
+from cub.ir import BV, Binary, Const, Resize, Var, View, flat_struct
 
 PACKAGE = Path(__file__).resolve().parents[1]
 
@@ -73,8 +73,8 @@ def test_int_shift_amount_is_coerced_to_unsigned_of_the_same_width() -> None:
 def test_reinterpret_flips_signedness_and_keeps_width() -> None:
     assert u8.as_signed().node == Resize("reinterpret", u8.node, 8)
     assert x8.as_unsigned().node == Resize("reinterpret", x8.node, 8)
-    assert x8.as_signed().node == Var("x", BV(8, True))
-    assert u8.as_unsigned().node == Var("u", BV(8, False))
+    assert x8.as_signed().node == View(Var("x", flat_struct(8)), signed=True)
+    assert u8.as_unsigned().node == View(Var("u", flat_struct(8)), signed=False)
 
 
 def _pyrefly_errors(tmp_path: Path, source: str) -> str:
@@ -117,3 +117,30 @@ def test_bool_equality_is_sat_iff_python_agrees(op: Callable[[object, object], o
         if (solve(p if pv else ~p, q if qv else ~q, relation) is not None) != op(pv, qv)
     ]
     assert mismatches == []
+
+
+STRUCT_PRELUDE = 'from cub import Int, Struct\ns, t, x = Struct.var("s", 4), Struct.var("t", 4), Int.var("x", 4)\n'
+STRUCT_CONTROL = """
+from cub import BOOL, Bool, solve
+grid = Struct.var("g", 9, of=Struct.type(9, of=4))
+Struct.var("h", 9, of=grid.type)
+Struct.var("k", 2, of=BOOL)
+cell: Struct = grid.sub(2).sub(5)
+flag: Bool = cell.bit(0) & s.bit(-1)
+rec = Struct(flag, cell, grid[0])
+model = solve(s == t, s != t, x + s.as_int() == 1, x.struct == s, flag.ite(grid, grid) == grid)
+if model is not None:
+    shape: tuple[object, ...] = model[grid]
+    value: int = model[x]
+    bit: bool = model[flag]
+"""
+
+
+def test_pyrefly_rejects_struct_ordering_and_struct_arithmetic(tmp_path: Path) -> None:
+    assert "0 errors" in _pyrefly_errors(tmp_path, STRUCT_PRELUDE + STRUCT_CONTROL), (
+        "well-typed control file must check clean"
+    )
+    report = _pyrefly_errors(tmp_path, STRUCT_PRELUDE + "s < t\n")
+    assert "`<` is not supported between `Struct` and `Struct`" in report, report
+    report = _pyrefly_errors(tmp_path, STRUCT_PRELUDE + "x + s\n")
+    assert "`+` is not supported between `Int` and `Struct`" in report, report

@@ -5,10 +5,10 @@ from typing import Any
 
 import pytest
 
-from cub import CNF, Bool, Int, UInt, compile, solve
+from cub import CNF, Bool, Int, Struct, UInt, compile, solve
 from cub._millisat import Solver
 from cub.cnf import FALSE, TRUE
-from cub.ir import Var
+from cub.ir import Var, View, flat_struct
 
 type BitVec = Int | UInt
 
@@ -42,7 +42,7 @@ def domain(cls: type[BitVec], width: int) -> range:
 
 
 def feasible_values[V: (Int, UInt)](expr: V, *given: Bool) -> list[int]:
-    result = expr.__class__(Var("result", expr.type))
+    result = expr.__class__(View(Var("result", flat_struct(expr.width)), expr.type.signed))
     seen: list[int] = []
     while (model := solve(*given, result == expr, *(result != v for v in seen))) is not None:
         seen.append(model[result])
@@ -307,7 +307,9 @@ def test_model_rejects_a_handle_outside_the_solved_constraints() -> None:
 
 def test_reusing_a_variable_name_with_another_type_raises() -> None:
     with pytest.raises(TypeError, match="variable 'x' is used as both"):
-        compile(Int.var("x", 4) == 0, UInt.var("x", 4) == 0)
+        compile(Int.var("x", 4) == 0, Int.var("x", 5) == 0)
+    with pytest.raises(TypeError, match="variable 'x' is used as both"):
+        compile(Int.var("x", 4) == 0, Struct.var("x", 2, of=2).flatten().as_int() == 0)
 
 
 def test_reusing_a_variable_name_with_the_same_type_is_the_same_variable() -> None:
